@@ -1,3 +1,5 @@
+### Implementation of AdaLAM, which supports batch processing of multiple images at once
+
 # AdaLAM
 
 [AdaLAM: Revisiting Handcrafted Outlier Detection](https://arxiv.org/abs/2006.04250)
