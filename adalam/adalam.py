@@ -50,33 +50,33 @@ class AdalamFilter:
             Call the core functionality of AdaLAM, i.e. just outlier filtering. No sanity check is performed on the inputs.
 
             Inputs:
-                k1: keypoint locations in the source image, in pixel coordinates.
-                    Expected a float32 tensor with shape (num_keypoints_in_source_image, 2).
-                k2: keypoint locations in the destination image, in pixel coordinates.
-                    Expected a float32 tensor with shape (num_keypoints_in_destination_image, 2).
+                k1: keypoint locations in the source images, in pixel coordinates.
+                    Expected a float32 tensor with shape (batch_size, num_keypoints_in_source_image, 2).
+                k2: keypoint locations in the destination images, in pixel coordinates.
+                    Expected a float32 tensor with shape (batch_size, num_keypoints_in_destination_image, 2).
                 putative_matches: Initial set of putative matches to be filtered.
                                   The current implementation assumes that these are unfiltered nearest neighbor matches,
                                   so it requires this to be a list of indices a_i such that the source keypoint i is associated to the destination keypoint a_i.
                                   For now to use AdaLAM on different inputs a workaround on the input format is required.
-                                  Expected a long tensor with shape (num_keypoints_in_source_image,).
+                                  Expected a long tensor with shape (batch_size, num_keypoints_in_source_image,).
                 scores: Confidence scores on the putative_matches. Usually holds Lowe's ratio scores.
                 mnn: A mask indicating which putative matches are also mutual nearest neighbors. See documentation on 'force_seed_mnn' in the DEFAULT_CONFIG.
                      If None, it disables the mutual nearest neighbor filtering on seed point selection.
-                     Expected a bool tensor with shape (num_keypoints_in_source_image,)
-                im1shape: Shape of the source image. If None, it is inferred from keypoints max and min, at the cost of wasted runtime. So please provide it.
-                          Expected a tuple with (width, height) or (height, width) of source image
-                im2shape: Shape of the destination image. If None, it is inferred from keypoints max and min, at the cost of wasted runtime. So please provide it.
-                          Expected a tuple with (width, height) or (height, width) of destination image
+                     Expected a bool tensor with shape (batch_size, num_keypoints_in_source_image,)
+                im1shape: Shape of the source images. If None, it is inferred from keypoints max and min, at the cost of wasted runtime. So please provide it.
+                          Expected a tuple or a list of tuples with (width, height) or (height, width) of source images
+                im2shape: Shape of the destination images. If None, it is inferred from keypoints max and min, at the cost of wasted runtime. So please provide it.
+                          Expected a tuple or a list of tuples with (width, height) or (height, width) of destination images
                 o1/o2: keypoint orientations in degrees. They can be None if 'orientation_difference_threshold' in config is set to None.
                        See documentation on 'orientation_difference_threshold' in the DEFAULT_CONFIG.
-                       Expected a float32 tensor with shape (num_keypoints_in_source/destination_image,)
+                       Expected a float32 tensor with shape (batch_size,num_keypoints_in_source/destination_image,)
                 s1/s2: keypoint scales. They can be None if 'scale_rate_threshold' in config is set to None.
                        See documentation on 'scale_rate_threshold' in the DEFAULT_CONFIG.
-                       Expected a float32 tensor with shape (num_keypoints_in_source/destination_image,)
+                       Expected a float32 tensor with shape (batch_size,num_keypoints_in_source/destination_image,)
 
             Returns:
                 Filtered putative matches.
-                A long tensor with shape (num_filtered_matches, 2) with indices of corresponding keypoints in k1 and k2.
+                A long tensor with shape (batch_size, num_filtered_matches, 2) with indices of corresponding keypoints in k1 and k2.
         """
         with torch.no_grad():
             return adalam_core(k1, k2, fnn12=putative_matches,
@@ -100,28 +100,28 @@ class AdalamFilter:
                 - finally calls AdaLAM filtering.
 
             Inputs:
-                k1: keypoint locations in the source image, in pixel coordinates.
-                    Expected an array with shape (num_keypoints_in_source_image, 2).
-                k2: keypoint locations in the destination image, in pixel coordinates.
-                    Expected an array with shape (num_keypoints_in_destination_image, 2).
-                d1: descriptors in the source image.
-                    Expected an array with shape (num_keypoints_in_source_image, descriptor_size).
-                d2: descriptors in the destination image.
-                    Expected an array with shape (num_keypoints_in_destination_image, descriptor_size).
-                im1shape: Shape of the source image. If None, it is inferred from keypoints max and min, at the cost of wasted runtime. So please provide it.
-                          Expected a tuple with (width, height) or (height, width) of source image
-                im2shape: Shape of the destination image. If None, it is inferred from keypoints max and min, at the cost of wasted runtime. So please provide it.
-                          Expected a tuple with (width, height) or (height, width) of destination image
+                k1: keypoint locations in the source images, in pixel coordinates.
+                    Expected an array with shape (batch_size, num_keypoints_in_source_image, 2).
+                k2: keypoint locations in the destination images, in pixel coordinates.
+                    Expected an array with shape (batch_size, num_keypoints_in_destination_image, 2).
+                d1: descriptors in the source images.
+                    Expected an array with shape (batch_size, num_keypoints_in_source_image, descriptor_size).
+                d2: descriptors in the destination images.
+                    Expected an array with shape (batch_size, num_keypoints_in_destination_image, descriptor_size).
+                im1shape: Shape of the source images. If None, it is inferred from keypoints max and min, at the cost of wasted runtime. So please provide it.
+                          Expected a tuple or a list of tuples with (width, height) or (height, width) of source images
+                im2shape: Shape of the destination images. If None, it is inferred from keypoints max and min, at the cost of wasted runtime. So please provide it.
+                          Expected a tuple or a list of tuples with (width, height) or (height, width) of destination images
                 o1/o2: keypoint orientations in degrees. They can be None if 'orientation_difference_threshold' in config is set to None.
                        See documentation on 'orientation_difference_threshold' in the DEFAULT_CONFIG.
-                       Expected an array with shape (num_keypoints_in_source/destination_image,)
+                       Expected an array with shape (batch_size, num_keypoints_in_source/destination_image,)
                 s1/s2: keypoint scales. They can be None if 'scale_rate_threshold' in config is set to None.
                        See documentation on 'scale_rate_threshold' in the DEFAULT_CONFIG.
-                       Expected an array with shape (num_keypoints_in_source/destination_image,)
+                       Expected an array with shape (batch_size, num_keypoints_in_source/destination_image,)
 
             Returns:
                 Filtered putative matches.
-                A long tensor with shape (num_filtered_matches, 2) with indices of corresponding keypoints in k1 and k2.
+                A list of long tensors with shapes (num_filtered_matches, 2) with indices of corresponding keypoints in k1 and k2 for each pair of images in batch.
         """
         if s1 is None or s2 is None:
             if self.config['scale_rate_threshold'] is not None:
@@ -134,13 +134,13 @@ class AdalamFilter:
                     "Please either provide orientations or set 'orientation_difference_threshold' to None to disable orientations filtering")
         k1, k2, d1, d2, o1, o2, s1, s2 = self.__to_torch(k1, k2, d1, d2, o1, o2, s1, s2)
         distmat = dist_matrix(d1, d2, is_normalized=False)
-        dd12, nn12 = torch.topk(distmat, k=2, dim=1, largest=False)  # (n1, 2)
+        dd12, nn12 = torch.topk(distmat, k=2, dim=-1, largest=False)
 
-        putative_matches = nn12[:, 0]
-        scores = dd12[:, 0] / dd12[:, 1].clamp_min_(1e-3)
+        putative_matches = nn12[:, :, 0]
+        scores = dd12[:, :, 0] / dd12[:, :, 1].clamp_min_(1e-3)
         if self.config['force_seed_mnn']:
-            dd21, nn21 = torch.min(distmat, dim=0)  # (n2,)
-            mnn = nn21[putative_matches] == torch.arange(k1.shape[0], device=self.config['device'])
+            dd21, nn21 = torch.min(distmat, dim=1)
+            mnn = nn21.gather(index=putative_matches, dim=-1) == torch.arange(k1.shape[1], device=self.config['device'])
         else:
             mnn = None
 

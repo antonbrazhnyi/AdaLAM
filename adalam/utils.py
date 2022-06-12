@@ -16,12 +16,10 @@ def arange_sequence(ranges):
 
 def dist_matrix(d1, d2, is_normalized=False):
     if is_normalized:
-        return 2 - 2.0 * d1 @ d2.t()
-    x_norm = (d1 ** 2).sum(1).view(-1, 1)
-    y_norm = (d2 ** 2).sum(1).view(1, -1)
-    # print(x_norm, y_norm)
-    distmat = x_norm + y_norm - 2.0 * d1 @ d2.t()
-    # distmat[torch.isnan(distmat)] = np.inf
+        return 2 - 2.0 * d1 @ d2.transpose(1, 2)
+    x_norm = (d1 ** 2).sum(-1).unsqueeze(1).transpose(1, 2)
+    y_norm = (d2 ** 2).sum(-1).unsqueeze(1)
+    distmat = x_norm + y_norm - 2.0 * d1 @ d2.transpose(1, 2)
     return distmat
 
 

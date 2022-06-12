@@ -15,7 +15,7 @@ def select_seeds(dist1: torch.Tensor, R1: float, scores1: torch.Tensor, fnn12: t
                The i-th entry of fnn12 is j if and only if keypoint k_i in image I_1 is matched to keypoint k_j in image I_2
         mnn: A mask indicating which putative matches are also mutual nearest neighbors. See documentation on 'force_seed_mnn' in the DEFAULT_CONFIG.
              If None, it disables the mutual nearest neighbor filtering on seed point selection.
-             Expected a bool tensor with shape (num_keypoints_in_source_image,)
+             Expected a bool tensor with shape (batch_size, num_keypoints_in_source_image,)
 
         Returns:
             Indices of seed points.
@@ -23,26 +23,24 @@ def select_seeds(dist1: torch.Tensor, R1: float, scores1: torch.Tensor, fnn12: t
             im1seeds: Keypoint index of chosen seeds in image I_1
             im2seeds: Keypoint index of chosen seeds in image I_2
     """
-    im1neighmap = dist1 < R1**2  # (n1, n1)
+    im1neighmap = dist1 < R1.view(-1, 1, 1) ** 2
     # find out who scores higher than whom
-    im1scorescomp = scores1.unsqueeze(1) > scores1.unsqueeze(0)  # (n1, n1)
+    im1scorescomp = scores1.unsqueeze(-1) > scores1.unsqueeze(-2)
     # find out who scores higher than all of its neighbors: seed points
     if mnn is not None:
-        im1bs = (~torch.any(im1neighmap & im1scorescomp & mnn.unsqueeze(0),
-                            dim=1)) & mnn & (scores1 < 0.8**2)  # (n1,)
+        im1bs = (~torch.any(im1neighmap & im1scorescomp & mnn.unsqueeze(1), dim=-1)) & mnn & (scores1 < 0.8**2)
     else:
-        im1bs = (~torch.any(im1neighmap & im1scorescomp, dim=1)) & (scores1 <
-                                                                    0.8**2)
+        im1bs = (~torch.any(im1neighmap & im1scorescomp, dim=1)) & (scores1 < 0.8**2)
 
     # collect all seeds in both images and the 1NN of the seeds of the other image
-    im1seeds = torch.where(im1bs)[0]  # (n1bs) index format
-    im2seeds = fnn12[im1bs]  # (n1bs) index format
-    return im1seeds, im2seeds
+    imidx, im1seeds = torch.where(im1bs)
+    im2seeds = fnn12[im1bs]
+    return imidx, im1seeds, im2seeds
 
 
 def extract_neighborhood_sets(
         o1: torch.Tensor, o2: torch.Tensor, s1: torch.Tensor, s2: torch.Tensor,
-        dist1: torch.Tensor, im1seeds: torch.Tensor, im2seeds: torch.Tensor,
+        dist1: torch.Tensor, imidx: torch.Tensor, im1seeds: torch.Tensor, im2seeds: torch.Tensor,
         k1: torch.Tensor, k2: torch.Tensor, R1: float, R2: float,
         fnn12: torch.Tensor, ORIENTATION_THR: float, SCALE_RATE_THR: float,
         SEARCH_EXP: float, MIN_INLIERS: float):
@@ -55,6 +53,7 @@ def extract_neighborhood_sets(
         s1: Scales of keypoints in image I_1
         s2: Scales of keypoints in image I_2
         dist1: Precomputed distance matrix between keypoints in image I_1
+        imidx: index of images in batch
         im1seeds: Keypoint index of chosen seeds in image I_1
         im2seeds: Keypoint index of chosen seeds in image I_2
         k1: Keypoint locations in image I_1
@@ -75,49 +74,47 @@ def extract_neighborhood_sets(
             local_neighs_mask: Boolean matrix of size (num_seeds, num_keypoints).
                                Entry (i, j) is True iff keypoint j was assigned to seed i.
             rdims: Number of keypoints included in the neighborhood for each seed
+            imidx: Index of images in batch. This allows to distinguish inputs belonging to the same image
             im1seeds: Keypoint index of chosen seeds in image I_1
             im2seeds: Keypoint index of chosen seeds in image I_2
 
     """
-    dst1 = dist1[im1seeds, :]
-    dst2 = dist_matrix(k2[fnn12[im1seeds]], k2[fnn12])
+    dst1 = dist1[imidx, im1seeds]
+    dst2 = dist_matrix(k2[imidx].gather(index=fnn12[imidx, im1seeds].view(-1, 1, 1).repeat(1, 1, 2), dim=-2),
+                       k2[imidx].gather(index=fnn12[imidx].unsqueeze(-1).repeat(1, 1, 2), dim=-2)).squeeze(1)
 
     # initial candidates are matches which are close to the same seed in both images
-    local_neighs_mask = (dst1 < (SEARCH_EXP * R1) ** 2) \
-                        & (dst2 < (SEARCH_EXP * R2) ** 2)
+    local_neighs_mask = (dst1 < (SEARCH_EXP * R1[imidx].view(-1, 1)) ** 2) \
+                        & (dst2 < (SEARCH_EXP * R2[imidx].view(-1, 1)) ** 2)
 
     # If requested, also their orientation delta should be compatible with that of the corresponding seed
     if ORIENTATION_THR is not None and ORIENTATION_THR < 180:
-        relo = orientation_diff(o1, o2[fnn12])
-        orientation_diffs = torch.abs(
-            orientation_diff(relo.unsqueeze(0), relo[im1seeds].unsqueeze(1)))
-        local_neighs_mask = local_neighs_mask & (orientation_diffs <
-                                                 ORIENTATION_THR)
+        relo = orientation_diff(o1, o2.gather(index=fnn12, dim=1))
+        orientation_diffs = torch.abs(orientation_diff(relo[imidx], relo[imidx, im1seeds].unsqueeze(1)))
+        local_neighs_mask = local_neighs_mask & (orientation_diffs < ORIENTATION_THR)
 
     # If requested, also their scale delta should be compatible with that of the corresponding seed
     if SCALE_RATE_THR is not None and SCALE_RATE_THR < 10:
-        rels = s2[fnn12] / s1
-        scale_rates = rels[im1seeds].unsqueeze(1) / rels.unsqueeze(0)
-        local_neighs_mask = local_neighs_mask & (scale_rates < SCALE_RATE_THR) \
-                            & (scale_rates > 1 / SCALE_RATE_THR)  # (ns, n1)
+        rels = s2.gather(index=fnn12, dim=1) / s1
+        scale_rates = rels[imidx, im1seeds].unsqueeze(1) / rels[imidx]
+        local_neighs_mask = local_neighs_mask & (scale_rates < SCALE_RATE_THR) & (scale_rates > 1 / SCALE_RATE_THR)
 
     # count how many keypoints ended up in each neighborhood
     numn1 = torch.sum(local_neighs_mask, dim=1)
     # and only keep the ones that have enough points
     valid_seeds = numn1 >= MIN_INLIERS
 
-    local_neighs_mask = local_neighs_mask[valid_seeds, :]
+    local_neighs_mask = local_neighs_mask[valid_seeds]
 
     rdims = numn1[valid_seeds]
 
-    return local_neighs_mask, rdims, im1seeds[valid_seeds], im2seeds[
-        valid_seeds]
+    return local_neighs_mask, rdims, imidx[valid_seeds], im1seeds[valid_seeds], im2seeds[valid_seeds]
 
 
 def extract_local_patterns(
         fnn12: torch.Tensor,
         fnn_to_seed_local_consistency_map_corr: torch.Tensor, k1: torch.Tensor,
-        k2: torch.Tensor, im1seeds: torch.Tensor, im2seeds: torch.Tensor,
+        k2: torch.Tensor, imidx: torch.Tensor, im1seeds: torch.Tensor, im2seeds: torch.Tensor,
         scores: torch.Tensor):
     """
         Prepare local neighborhoods around each seed for the parallel RANSACs. This involves two steps:
@@ -130,6 +127,7 @@ def extract_local_patterns(
                                                 Entry (i, j) is True iff keypoint j was assigned to seed i.
         k1: Keypoint locations in image I_1
         k2: Keypoint locations in image I_2
+        imidx: index of images in batch. This allows to distinguish inputs belonging to the same image
         im1seeds: Keypoint index of chosen seeds in image I_1
         im2seeds: Keypoint index of chosen seeds in image I_2
         scores: Scores to rank correspondences by confidence.
@@ -153,19 +151,19 @@ def extract_local_patterns(
     # - tokp1 holds the index of the keypoint in image I_1 for each assignment 
     ransidx, tokp1 = torch.where(fnn_to_seed_local_consistency_map_corr)
     # - and of course tokp2 holds the index of the corresponding keypoint in image I_2
-    tokp2 = fnn12[tokp1]
+    tokp2 = fnn12[imidx][ransidx, tokp1]
 
     # Now take the locations in the image of each considered keypoint ... 
-    im1abspattern = k1[tokp1]
-    im2abspattern = k2[tokp2]
+    im1abspattern = k1[imidx][ransidx, tokp1]
+    im2abspattern = k2[imidx][ransidx, tokp2]
 
     # ... and subtract the location of its corresponding seed to get relative coordinates
-    im1loc = im1abspattern - k1[im1seeds[ransidx]]
-    im2loc = im2abspattern - k2[im2seeds[ransidx]]
+    im1loc = im1abspattern - k1[imidx][ransidx, im1seeds[ransidx]]
+    im2loc = im2abspattern - k2[imidx][ransidx, im2seeds[ransidx]]
 
     # Finally we need to sort keypoints by scores in a way that assignments to the same seed are close together
     # To achieve this we assume scores lie in (0, 1) and add the integer index of the corresponding seed
-    expanded_local_scores = scores[tokp1] + ransidx.type(scores.dtype)
+    expanded_local_scores = scores[imidx][ransidx, tokp1] + ransidx.type(scores.dtype)
 
     sorting_perm = torch.argsort(expanded_local_scores)
 
@@ -193,29 +191,29 @@ def adalam_core(k1: torch.Tensor,
         Call the core functionality of AdaLAM, i.e. just outlier filtering. No sanity check is performed on the inputs.
 
         Inputs:
-            k1: keypoint locations in the source image, in pixel coordinates.
-                Expected a float32 tensor with shape (num_keypoints_in_source_image, 2).
-            k2: keypoint locations in the destination image, in pixel coordinates.
-                Expected a float32 tensor with shape (num_keypoints_in_destination_image, 2).
-            fn12: Initial set of putative matches to be filtered.
-                  The current implementation assumes that these are unfiltered nearest neighbor matches,
-                  so it requires this to be a list of indices a_i such that the source keypoint i is associated to the destination keypoint a_i.
-                  For now to use AdaLAM on different inputs a workaround on the input format is required.
-                  Expected a long tensor with shape (num_keypoints_in_source_image,).
-            scores1: Confidence scores on the putative_matches. Usually holds Lowe's ratio scores.
-            mnn: A mask indicating which putative matches are also mutual nearest neighbors. See documentation on 'force_seed_mnn' in the DEFAULT_CONFIG.
-                 If None, it disables the mutual nearest neighbor filtering on seed point selection.
-                 Expected a bool tensor with shape (num_keypoints_in_source_image,)
-            im1shape: Shape of the source image. If None, it is inferred from keypoints max and min, at the cost of wasted runtime. So please provide it.
-                      Expected a tuple with (width, height) or (height, width) of source image
-            im2shape: Shape of the destination image. If None, it is inferred from keypoints max and min, at the cost of wasted runtime. So please provide it.
-                      Expected a tuple with (width, height) or (height, width) of destination image
-            o1/o2: keypoint orientations in degrees. They can be None if 'orientation_difference_threshold' in config is set to None.
-                   See documentation on 'orientation_difference_threshold' in the DEFAULT_CONFIG.
-                   Expected a float32 tensor with shape (num_keypoints_in_source/destination_image,)
-            s1/s2: keypoint scales. They can be None if 'scale_rate_threshold' in config is set to None.
-                   See documentation on 'scale_rate_threshold' in the DEFAULT_CONFIG.
-                   Expected a float32 tensor with shape (num_keypoints_in_source/destination_image,)
+                k1: keypoint locations in the source images, in pixel coordinates.
+                    Expected a float32 tensor with shape (batch_size, num_keypoints_in_source_image, 2).
+                k2: keypoint locations in the destination images, in pixel coordinates.
+                    Expected a float32 tensor with shape (batch_size, num_keypoints_in_destination_image, 2).
+                putative_matches: Initial set of putative matches to be filtered.
+                                  The current implementation assumes that these are unfiltered nearest neighbor matches,
+                                  so it requires this to be a list of indices a_i such that the source keypoint i is associated to the destination keypoint a_i.
+                                  For now to use AdaLAM on different inputs a workaround on the input format is required.
+                                  Expected a long tensor with shape (batch_size, num_keypoints_in_source_image,).
+                scores: Confidence scores on the putative_matches. Usually holds Lowe's ratio scores.
+                mnn: A mask indicating which putative matches are also mutual nearest neighbors. See documentation on 'force_seed_mnn' in the DEFAULT_CONFIG.
+                     If None, it disables the mutual nearest neighbor filtering on seed point selection.
+                     Expected a bool tensor with shape (batch_size, num_keypoints_in_source_image,)
+                im1shape: Shape of the source images. If None, it is inferred from keypoints max and min, at the cost of wasted runtime. So please provide it.
+                          Expected a tuple or a list of tuples with (width, height) or (height, width) of source images
+                im2shape: Shape of the destination images. If None, it is inferred from keypoints max and min, at the cost of wasted runtime. So please provide it.
+                          Expected a tuple or a list of tuples with (width, height) or (height, width) of destination images
+                o1/o2: keypoint orientations in degrees. They can be None if 'orientation_difference_threshold' in config is set to None.
+                       See documentation on 'orientation_difference_threshold' in the DEFAULT_CONFIG.
+                       Expected a float32 tensor with shape (batch_size,num_keypoints_in_source/destination_image,)
+                s1/s2: keypoint scales. They can be None if 'scale_rate_threshold' in config is set to None.
+                       See documentation on 'scale_rate_threshold' in the DEFAULT_CONFIG.
+                       Expected a float32 tensor with shape (batch_size,num_keypoints_in_source/destination_image,)
 
         Returns:
             Filtered putative matches.
@@ -231,57 +229,58 @@ def adalam_core(k1: torch.Tensor,
     REFIT = config['refit']
 
     if im1shape is None:
-        k1mins, _ = torch.min(k1, dim=0)
-        k1maxs, _ = torch.max(k1, dim=0)
-        im1shape = (k1maxs - k1mins).cpu().numpy()
+        k1mins, _ = torch.min(k1, dim=1)
+        k1maxs, _ = torch.max(k1, dim=1)
+        im1shape = (k1maxs - k1mins).cpu()
     if im2shape is None:
-        k2mins, _ = torch.min(k2, dim=0)
-        k2maxs, _ = torch.max(k2, dim=0)
-        im2shape = (k2maxs - k2mins).cpu().numpy()
+        k2mins, _ = torch.min(k2, dim=1)
+        k2maxs, _ = torch.max(k2, dim=1)
+        im2shape = (k2maxs - k2mins).cpu()
 
     # Compute seed selection radii to be invariant to image rescaling
-    R1 = np.sqrt(np.prod(im1shape[:2]) / AREA_RATIO / np.pi)
-    R2 = np.sqrt(np.prod(im2shape[:2]) / AREA_RATIO / np.pi)
+    R1 = torch.sqrt(torch.prod(im1shape[:, :2], axis=1) / AREA_RATIO / np.pi)
+    R2 = torch.sqrt(torch.prod(im2shape[:, :2], axis=1) / AREA_RATIO / np.pi)
 
     # Precompute the inner distances of keypoints in image I_1
     dist1 = dist_matrix(k1, k1)
 
     # Select seeds
-    im1seeds, im2seeds = select_seeds(dist1, R1, scores1, fnn12, mnn)
+    imidx, im1seeds, im2seeds = select_seeds(dist1, R1, scores1, fnn12, mnn)
 
     # Find the neighboring and coherent keyopints consistent with each seed
-    local_neighs_mask, rdims, im1seeds, im2seeds = extract_neighborhood_sets(
-        o1, o2, s1, s2, dist1, im1seeds, im2seeds, k1, k2, R1, R2, fnn12,
+    local_neighs_mask, rdims, imidx, im1seeds, im2seeds = extract_neighborhood_sets(
+        o1, o2, s1, s2, dist1, imidx, im1seeds, im2seeds, k1, k2, R1, R2, fnn12,
         ORIENTATION_THR, SCALE_RATE_THR, SEARCH_EXP, MIN_INLIERS)
 
     if rdims.shape[0] == 0:
         # No seed point survived. Just output ratio-test matches. This should happen very rarely.
-        absolute_im1idx = torch.where(scores1 < 0.8**2)[0]
-        absolute_im2idx = fnn12[absolute_im1idx]
-        return torch.stack([absolute_im1idx, absolute_im2idx], dim=1)
+        imidx, absolute_im1idx = torch.where(scores1 < 0.8 ** 2)
+        absolute_im2idx = fnn12[imidx, absolute_im1idx]
+        final_matches = torch.stack([absolute_im1idx, absolute_im2idx], dim=1)
+        return [torch.unique(final_matches[imidx == i], dim=0) for i in np.unique(imidx)]
 
     # Format neighborhoods for parallel RANSACs
     im1loc, im2loc, ransidx, tokp1, tokp2 = extract_local_patterns(
-        fnn12, local_neighs_mask, k1, k2, im1seeds, im2seeds, scores1)
-    im1loc = im1loc / (R1 * SEARCH_EXP)
-    im2loc = im2loc / (R2 * SEARCH_EXP)
+        fnn12, local_neighs_mask, k1, k2, imidx, im1seeds, im2seeds, scores1)
+    im1loc = im1loc / (R1[imidx][ransidx].view(-1, 1) * SEARCH_EXP)
+    im2loc = im2loc / (R2[imidx][ransidx].view(-1, 1) * SEARCH_EXP)
 
     # Run the parallel confidence-based RANSACs to perform local affine verification
-    inlier_idx, _, \
-    inl_confidence, inlier_counts = ransac(xsamples=im1loc,
-                                           ysamples=im2loc,
-                                           rdims=rdims, iters=RANSAC_ITERS,
-                                           refit=REFIT, config=config)
+    inlier_idx, _, inl_confidence, inlier_counts = ransac(xsamples=im1loc,
+                                                          ysamples=im2loc,
+                                                          rdims=rdims, iters=RANSAC_ITERS,
+                                                          refit=REFIT, config=config)
 
     conf = inl_confidence[ransidx[inlier_idx]]
     cnt = inlier_counts[ransidx[inlier_idx]].float()
-    passed_inliers_mask = (conf >= MIN_CONF) & (cnt * (1 - 1/conf) >= MIN_INLIERS)
+    passed_inliers_mask = (conf >= MIN_CONF) & (cnt * (1 - 1 / conf) >= MIN_INLIERS)
     accepted_inliers = inlier_idx[passed_inliers_mask]
 
     absolute_im1idx = tokp1[accepted_inliers]
     absolute_im2idx = tokp2[accepted_inliers]
 
+    im_idx_mask = imidx[ransidx][accepted_inliers]
     final_matches = torch.stack([absolute_im1idx, absolute_im2idx], dim=1)
-    if final_matches.shape[0] > 1:
-        return torch.unique(final_matches, dim=0)
+    final_matches = [torch.unique(final_matches[im_idx_mask == i], dim=0) for i in np.unique(im_idx_mask)]
+
     return final_matches
