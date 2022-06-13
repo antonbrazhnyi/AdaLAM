@@ -232,14 +232,22 @@ def adalam_core(k1: torch.Tensor,
         k1mins, _ = torch.min(k1, dim=1)
         k1maxs, _ = torch.max(k1, dim=1)
         im1shape = (k1maxs - k1mins).cpu()
+    else:
+        im1shape = torch.tensor(im1shape).view(-1, 2)
     if im2shape is None:
         k2mins, _ = torch.min(k2, dim=1)
         k2maxs, _ = torch.max(k2, dim=1)
         im2shape = (k2maxs - k2mins).cpu()
+    else:
+        im2shape = torch.tensor(im2shape).view(-1, 2)
 
     # Compute seed selection radii to be invariant to image rescaling
-    R1 = torch.sqrt(torch.prod(im1shape[:, :2], axis=1) / AREA_RATIO / np.pi)
-    R2 = torch.sqrt(torch.prod(im2shape[:, :2], axis=1) / AREA_RATIO / np.pi)
+    R1 = torch.sqrt(torch.prod(im1shape, axis=1) / AREA_RATIO / np.pi)
+    R2 = torch.sqrt(torch.prod(im2shape, axis=1) / AREA_RATIO / np.pi)
+    if R1.shape[0] != k1.shape[0]:
+        R1 = R1.repeat(k1.shape[0], 1)
+    if R2.shape[0] != k2.shape[0]:
+        R2 = R2.repeat(k2.shape[0], 1)
 
     # Precompute the inner distances of keypoints in image I_1
     dist1 = dist_matrix(k1, k1)
