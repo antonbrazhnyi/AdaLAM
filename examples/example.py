@@ -1,13 +1,17 @@
 import cv2 as cv
 import numpy as np
 import argparse
+import os
 import sys
+
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.append(ROOT_DIR)
 from adalam import AdalamFilter
 
 
 def extract_keypoints(impath):
     im = cv.imread(impath, cv.IMREAD_COLOR)
-    d = cv.xfeatures2d.SIFT_create(nfeatures=8000, contrastThreshold=1e-5)
+    d = cv.SIFT_create(nfeatures=8000, contrastThreshold=1e-5)
     kp1, desc1 = d.detectAndCompute(im, mask=np.ones(shape=im.shape[:-1] + (1,),
                                                               dtype=np.uint8))
     pts = np.array([k.pt for k in kp1], dtype=np.float32)
@@ -60,14 +64,24 @@ if __name__ == '__main__':
     k1, o1, s1, d1, im1 = extract_keypoints(opt.im1)
     k2, o2, s2, d2, im2 = extract_keypoints(opt.im2)
 
+    k1 = np.repeat(k1[np.newaxis], 2, axis=0)
+    d1 = np.repeat(d1[np.newaxis], 2, axis=0)
+    o1 = np.repeat(o1[np.newaxis], 2, axis=0)
+    s1 = np.repeat(s1[np.newaxis], 2, axis=0)
+
+    k2 = np.repeat(k2[np.newaxis], 2, axis=0)
+    d2 = np.repeat(d2[np.newaxis], 2, axis=0)
+    o2 = np.repeat(o2[np.newaxis], 2, axis=0)
+    s2 = np.repeat(s2[np.newaxis], 2, axis=0)
+
     matcher = AdalamFilter()
     matches = matcher.match_and_filter(k1=k1, k2=k2,
                                        o1=o1, o2=o2,
                                        d1=d1, d2=d2,
                                        s1=s1, s2=s2,
-                                       im1shape=im1.shape[:2], im2shape=im2.shape[:2]).cpu().numpy()
+                                       im1shape=im1.shape[:2], im2shape=im2.shape[:2])
 
-    show_matches(im1, im2, k1=k1[matches[:, 0]], k2=k2[matches[:, 1]])
+    show_matches(im1, im2, k1=k1[0][matches[0][:, 0].cpu().numpy()], k2=k2[0][matches[0][:, 1].cpu().numpy()])
 
 
 
